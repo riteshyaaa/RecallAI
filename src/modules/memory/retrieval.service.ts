@@ -1,14 +1,98 @@
 import { db } from "@/lib/db";
 import { localCalendarBounds, localDayBounds } from "./temporal.service";
 
+export type MemoryCandidate = {
+  id: string;
+  role: string;
+  content: string;
+  createdAt: Date;
+  conversationId: string;
+};
+
+type CandidateGroups = {
+  recent: MemoryCandidate[];
+  neighboring: MemoryCandidate[];
+  related: MemoryCandidate[];
+  temporal: MemoryCandidate[];
+};
+
+const stopWords = new Set([
+  "about",
+  "after",
+  "again",
+  "all",
+  "and",
+  "any",
+  "are",
+  "asked",
+  "before",
+  "big",
+  "but",
+  "can",
+  "could",
+  "changed",
+  "compare",
+  "current",
+  "date",
+  "did",
+  "does",
+  "find",
+  "for",
+  "from",
+  "have",
+  "help",
+  "here",
+  "how",
+  "just",
+  "last",
+  "more",
+  "most",
+  "need",
+  "not",
+  "now",
+  "one",
+  "same",
+  "search",
+  "second",
+  "since",
+  "still",
+  "tell",
+  "than",
+  "that",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "this",
+  "today",
+  "two",
+  "was",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "who",
+  "with",
+  "would",
+  "you",
+  "your",
+  "yesterday",
+]);
+
+function extractTerms(query: string) {
+  return [...new Set(query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [])]
+    .filter((term) => !stopWords.has(term))
+    .slice(0, 8);
+}
+
 export function temporalRange(
   query: string,
   timeZone: string,
   now = new Date(),
 ) {
   const lower = query.toLowerCase();
-  if (/\byesterday\b/.test(lower)) return localDayBounds(now, timeZone, -1);
-  if (/\btoday\b/.test(lower)) return localDayBounds(now, timeZone);
   const date = query.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (date)
     return localCalendarBounds(
@@ -129,7 +213,52 @@ export function temporalRange(
     ).start;
     return { start, end };
   }
+  // Explicit historical dates take priority over temporal words in the
+  // comparison clause (for example, "asked on Nov 3; is that still true today?").
+  if (/\byesterday\b/.test(lower)) return localDayBounds(now, timeZone, -1);
+  if (/\btoday\b/.test(lower)) return localDayBounds(now, timeZone);
   return null;
+}
+
+export function rankMemoryCandidates(
+  query: string,
+  groups: CandidateGroups,
+  now = new Date(),
+) {
+  const terms = extractTerms(query);
+  const candidates = new Map<
+    string,
+    { message: MemoryCandidate; score: number }
+  >();
+  const add = (messages: MemoryCandidate[], base: number) => {
+    for (const message of messages) {
+      const ageHours = Math.max(
+        0,
+        (now.getTime() - message.createdAt.getTime()) / 3_600_000,
+      );
+      const lexicalHits = terms.filter((term) =>
+        message.content.toLowerCase().includes(term),
+      ).length;
+      const score = base + lexicalHits * 4 + 12 / (1 + ageHours / 24);
+      const existing = candidates.get(message.id);
+      if (!existing || score > existing.score)
+        candidates.set(message.id, { message, score });
+    }
+  };
+  add(groups.recent, 55);
+  add(groups.neighboring, 35);
+  add(groups.related, 20);
+  add(groups.temporal, 100);
+
+  return [...candidates.values()]
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.message.createdAt.getTime() - a.message.createdAt.getTime(),
+    )
+    .slice(0, 24)
+    .map(({ message }) => message)
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 }
 
 export async function retrieveMemory(
@@ -137,91 +266,34 @@ export async function retrieveMemory(
   conversationId: string,
   query: string,
   timeZone: string,
+  now = new Date(),
 ) {
-  const range = temporalRange(query, timeZone);
-  const stopWords = new Set([
-    "about",
-    "after",
-    "again",
-    "all",
-    "and",
-    "any",
-    "are",
-    "asked",
-    "before",
-    "big",
-    "but",
-    "can",
-    "could",
-    "changed",
-    "compare",
-    "current",
-    "date",
-    "did",
-    "does",
-    "find",
-    "for",
-    "from",
-    "have",
-    "help",
-    "here",
-    "how",
-    "just",
-    "last",
-    "more",
-    "most",
-    "need",
-    "not",
-    "now",
-    "one",
-    "same",
-    "search",
-    "since",
-    "still",
-    "tell",
-    "than",
-    "that",
-    "them",
-    "then",
-    "there",
-    "these",
-    "they",
-    "this",
-    "today",
-    "two",
-    "was",
-    "what",
-    "when",
-    "where",
-    "which",
-    "while",
-    "who",
-    "with",
-    "would",
-    "you",
-    "your",
-    "yesterday",
-  ]);
-  const terms = [...new Set(query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [])]
-    .filter((term) => !stopWords.has(term))
-    .slice(0, 8);
+  const range = temporalRange(query, timeZone, now);
+  const preciseHistoricalRecall =
+    range !== null &&
+    /\b(?:what did i ask|what did i say|i asked|i said|questions? i asked)\b/i.test(
+      query,
+    );
+  const terms = extractTerms(query);
   const isReference =
     /\b(they|them|those|these|that|it|second|first|former|latter|since then|we discussed|we shortlisted)\b/i.test(
       query,
     );
   const [recent, temporal, related, neighboring] = await Promise.all([
-    db.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: "desc" },
-      take: 12,
-      select: {
-        id: true,
-        role: true,
-        content: true,
-        createdAt: true,
-        conversationId: true,
-      },
-    }),
+    !preciseHistoricalRecall
+      ? db.message.findMany({
+          where: { conversationId },
+          orderBy: { createdAt: "desc" },
+          take: 12,
+          select: {
+            id: true,
+            role: true,
+            content: true,
+            createdAt: true,
+            conversationId: true,
+          },
+        })
+      : Promise.resolve([]),
     range
       ? db.message.findMany({
           where: {
@@ -239,7 +311,7 @@ export async function retrieveMemory(
           },
         })
       : Promise.resolve([]),
-    terms.length
+    terms.length && !preciseHistoricalRecall
       ? db.message.findMany({
           where: {
             conversation: { sessionId },
@@ -258,7 +330,7 @@ export async function retrieveMemory(
           },
         })
       : Promise.resolve([]),
-    isReference
+    isReference && !preciseHistoricalRecall
       ? db.message.findMany({
           where: { conversation: { sessionId } },
           orderBy: { createdAt: "desc" },
@@ -273,37 +345,9 @@ export async function retrieveMemory(
         })
       : Promise.resolve([]),
   ]);
-  const candidates = new Map<
-    string,
-    { message: (typeof recent)[number]; score: number }
-  >();
-  const add = (messages: typeof recent, base: number) => {
-    for (const message of messages) {
-      const ageHours = Math.max(
-        0,
-        (Date.now() - message.createdAt.getTime()) / 3_600_000,
-      );
-      const lexicalHits = terms.filter((term) =>
-        message.content.toLowerCase().includes(term),
-      ).length;
-      const score = base + lexicalHits * 4 + 12 / (1 + ageHours / 24);
-      const existing = candidates.get(message.id);
-      if (!existing || score > existing.score)
-        candidates.set(message.id, { message, score });
-    }
-  };
-  add(recent, 55);
-  add(neighboring, 35);
-  add(related, 20);
-  add(temporal, 100);
-  const ranked = [...candidates.values()]
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        b.message.createdAt.getTime() - a.message.createdAt.getTime(),
-    )
-    .slice(0, 24);
-  return ranked
-    .map(({ message }) => message)
-    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  return rankMemoryCandidates(
+    query,
+    { recent, temporal, related, neighboring } as CandidateGroups,
+    now,
+  );
 }
