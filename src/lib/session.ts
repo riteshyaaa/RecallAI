@@ -8,7 +8,13 @@ export async function getSessionId() {
   let id = store.get(COOKIE)?.value;
   if (!id) {
     id = randomUUID();
-    store.set(COOKIE, id, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 60 * 60 * 24 * 365, path: "/" });
+    store.set(COOKIE, id, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 60 * 60 * 24 * 365,
+      path: "/",
+    });
   }
   await db.session.upsert({ where: { id }, update: {}, create: { id } });
   return id;

@@ -1,36 +1,23 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RecallAI
 
-## Getting Started
+RecallAI is a memory-aware web research assistant built with Next.js, PostgreSQL/Prisma, OpenAI tool calling, and Tavily. It keeps conversations across refreshes using a secure, HTTP-only anonymous session cookie.
 
-First, run the development server:
+## Run locally
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+1. Copy `.env.example` to `.env`. Set `TAVILY_API_KEY` and `META_API_KEY` to use the default Meta Muse Spark 1.2 Contributor model. To use OpenAI instead, set `MODEL_PROVIDER="openai"` and `OPENAI_API_KEY`. `META_MODEL` defaults to `muse-spark-1.2-contributor` and can be set to another supported Muse Spark model ID.
+2. Start Postgres: `docker compose up db -d`
+3. Install: `npm install`
+4. Apply migrations: `npx prisma migrate deploy`
+5. Start: `npm run dev`
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`. For Docker deployment, configure `.env` and run `docker compose up --build`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Commands
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`npm run lint` runs ESLint. `npm test` runs unit tests. `npm run build` verifies production compilation. Tests do not make live provider calls.
 
-## Learn More
+## Environment
 
-To learn more about Next.js, take a look at the following resources:
+`DATABASE_URL`, `MODEL_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `META_API_KEY`, `META_MODEL`, and `TAVILY_API_KEY` are documented in `.env.example`. Meta Muse Spark 1.2 Contributor is the default provider/model; set `META_API_KEY` to use it. Only the selected model provider's key is required. The Meta provider uses the OpenAI-compatible endpoint at `https://api.meta.ai/v1`; no keys are sent to the browser.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+See [DESIGN.md](DESIGN.md) for the one-page architecture note and trade-offs.

@@ -1,10 +1,23 @@
 import { z } from "zod";
 
-export const createConversationSchema = z.object({ title: z.string().trim().min(1).max(120).optional() });
+export const createConversationSchema = z.object({
+  title: z.string().trim().min(1).max(120).optional(),
+});
 export const chatSchema = z.object({
   conversationId: z.string().cuid().optional(),
   message: z.string().trim().min(1).max(12_000),
-  timezone: z.string().max(80).default("UTC"),
+  timezone: z
+    .string()
+    .max(80)
+    .default("UTC")
+    .refine((zone) => {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: zone });
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Invalid timezone"),
 });
 export const webSearchSchema = z.object({
   query: z.string().trim().min(2).max(400),

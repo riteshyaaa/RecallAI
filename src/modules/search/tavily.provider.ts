@@ -1,27 +1,84 @@
 import { env } from "@/lib/env";
 import type { SearchProvider, SearchResponse } from "./search.types";
 
+export function normalizeSearchUrl(value: string) {
+  const url = new URL(value);
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  url.hash = "";
+  for (const key of [...url.searchParams.keys()]) {
+    if (/^(utm_.+|fbclid|gclid|yclid|mc_cid|mc_eid)$/i.test(key))
+      url.searchParams.delete(key);
+  }
+  url.searchParams.sort();
+  url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+  return url.href;
+}
+
 export class TavilyProvider implements SearchProvider {
-  async search({ query, searchDepth, maxResults }: { query: string; searchDepth: "basic" | "advanced"; maxResults: number }): Promise<SearchResponse> {
+  async search({
+    query,
+    searchDepth,
+    maxResults,
+  }: {
+    query: string;
+    searchDepth: "basic" | "advanced";
+    maxResults: number;
+  }): Promise<SearchResponse> {
     if (!env.TAVILY_API_KEY) throw new Error("Web search is not configured.");
     const started = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12_000);
     try {
-      const response = await fetch("https://api.tavily.com/search", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.TAVILY_API_KEY}` }, body: JSON.stringify({ query, search_depth: searchDepth, max_results: maxResults, include_answer: false }) });
-      if (!response.ok) throw new Error(`Search provider returned ${response.status}`);
-      const payload = await response.json() as { results?: Array<{ title?: string; url?: string; content?: string; published_date?: string }> };
+      const response = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.TAVILY_API_KEY}`,
+        },
+        body: JSON.stringify({
+          query,
+          search_depth: searchDepth,
+          max_results: maxResults,
+          include_answer: false,
+        }),
+      });
+      if (!response.ok)
+        throw new Error(`Search provider returned ${response.status}`);
+      const payload = (await response.json()) as {
+        results?: Array<{
+          title?: string;
+          url?: string;
+          content?: string;
+          published_date?: string;
+          score?: number;
+        }>;
+      };
       const seen = new Set<string>();
       const results = (payload.results ?? []).flatMap((r) => {
         try {
-          const url = new URL(r.url ?? "");
-          url.hash = "";
-          if (!/^https?:$/.test(url.protocol) || seen.has(url.href)) return [];
-          seen.add(url.href);
-          return [{ title: r.title?.trim() || url.hostname, url: url.href, snippet: r.content?.trim() || "", publishedDate: r.published_date }];
-        } catch { return []; }
+          const normalizedUrl = normalizeSearchUrl(r.url ?? "");
+          if (!normalizedUrl || seen.has(normalizedUrl)) return [];
+          seen.add(normalizedUrl);
+          return [
+            {
+              title: r.title?.trim() || new URL(normalizedUrl).hostname,
+              url: normalizedUrl,
+              snippet: r.content?.trim() || "",
+              publishedDate: r.published_date,
+              score: r.score,
+            },
+          ];
+        } catch {
+          return [];
+        }
       });
+      if (results.some((result) => typeof result.score === "number")) {
+        results.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      }
       return { results, durationMs: Date.now() - started };
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
