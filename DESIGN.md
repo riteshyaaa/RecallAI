@@ -1,29 +1,34 @@
-# RecallAI — design note
+# RecallAI design
 
-RecallAI is a chat agent with exactly one model tool: `web_search`. A Next.js route validates requests, loads memory, runs the model/tool loop, streams SSE events, and persists the completed answer. PostgreSQL and Prisma hold the source conversation records. A random HTTP-only session cookie scopes all data to a browser.
+RecallAI is a conversational research agent built around one tool, `web_search`. Its defining behavior is a **temporal evidence ledger**: original messages and retrieved source snapshots are immutable records, so a later answer can compare what was said and cited then with what fresh sources say now.
+
+## Request path
 
 ```text
-message → persist → retrieve bounded memory → stream model/tool loop
-        → optional Tavily search → cited answer → persist
+user message → persist → retrieve bounded memory + selection reasons
+             → deterministic freshness plan → model/tool loop (≤2 searches, ≤80s)
+             → stream status, sources, tokens → persist answer + claim/source links
 ```
 
-## How memory and search work
+PostgreSQL is the system of record. `Message` stores the original conversation. `SearchExecution` records query, status, result snapshot, and duration; each normalized `EvidenceSource` stores its URL, title, snippet, publication date, and retrieval time. Cited answer paragraphs become `EvidenceClaim` rows linked to the exact source snapshots. The earlier answer and its evidence are never overwritten. Follow-up context can therefore contain both the historical claim and its sources, while a new search produces a separate current snapshot.
 
-Each message has its own UTC timestamp and conversation ID. Retrieval combines recent active-chat messages, lexical matches across the session, exact local-calendar ranges, and a small recency window for references such as “them” or “since then.” It deduplicates and caps context by message count and characters; originals remain stored for exact recall. Named dates, weekdays, yesterday, last week, and last month resolve in the browser's IANA timezone to half-open UTC ranges, including DST boundaries. The UI shows retrieved excerpts, local timestamps, and links to their original chats. Summary storage exists but is not generated or used.
+## Memory and planning
 
-The model chooses whether to search. The provider is selected by `MODEL_PROVIDER`, which defaults to Meta Model API using `muse-spark-1.2-contributor`; OpenAI remains available by selecting `openai`. Meta uses its OpenAI-compatible Chat Completions endpoint. A follow-up about changed pricing uses memory to resolve the company and prior date, then searches for current evidence. Search requests are schema-validated, timeout-bounded, and limited to two rounds. Results are URL-normalized, deduplicated, ranked by Tavily's scores, and treated as untrusted data. The prompt instructs the model to cite only URLs returned by search; weak evidence should produce a clear uncertainty statement. `npm run eval:memory` runs offline fixtures for challenge-style recall, timezone boundaries, and citation URL/coverage checks; it does not assess semantic entailment.
+Retrieval combines exact local-calendar ranges, recent active-chat messages, lexical matches, and nearby messages for references such as “the second one.” Dates are resolved in the browser's IANA timezone into half-open UTC intervals, including daylight-saving transitions. Candidates are deduplicated, ranked, and capped. Each returned item carries its selection reason (date match, lexical match, recency, or nearby reference); the UI exposes these reasons and links to the original conversation. The original message remains the authority for exact recall. Retrieval is intentionally lexical today: paraphrase misses are measured in the challenge set, not hidden behind an unmeasured embedding score.
 
-## Why these trade-offs
+`planSearch` is a cheap deterministic guard, not a second model call. Phrases that ask what changed, whether an older answer is still correct, or request current pricing require a fresh search. Other turns leave search choice to the model. The orchestrator accepts one sequential tool call per round, at most two calls, caps total execution at 80 seconds, and gives each provider request a shorter timeout. “The second one” is resolved from retrieved ordered messages before the model forms its search query. Tool arguments are Zod-validated; search output is untrusted data.
 
-- **Bounded retrieval over full transcripts:** it preserves exact source messages without growing every prompt indefinitely. Lexical matching misses paraphrases; recency context helps resolve references. Embeddings can be evaluated later behind the same retrieval boundary.
-- **Streamed tool-capable call over a separate planner call:** ordinary turns take one model call; a requested search adds only the necessary tool and answer turn. Tool execution is capped.
-- **Anonymous cookie over accounts:** it gives durable browser-scoped ownership without login friction. Cross-device use needs authentication.
-- **SSE over polling:** one request carries memory, search status, sources, and answer tokens. Aborted generations do not create completed assistant messages.
+## Evidence and uncertainty
 
-## Another week
+The system distinguishes historical evidence from fresh results and tells the model that a result page alone does not prove a change. It should report a changed value only when current evidence supports it and the earlier snapshot establishes a comparable prior value; otherwise it reports the current finding and says the change could not be verified. Citation auditing verifies URL provenance and paragraph citation coverage. Persisted claim links record which returned sources the answer cited. Neither mechanism proves semantic entailment: a human-reviewed or separately judged evaluation remains necessary before claiming that every source truly supports every claim.
 
-I would test the three challenge scenarios end to end with mocked providers, measure memory misses on a labeled set, and compare lexical retrieval with PostgreSQL full-text and pgvector. I would also add a shared rate limiter for multi-instance hosting, recoverable interrupted turns, and automated checks that every rendered citation belongs to the returned source set.
+## Why this design
 
-## Run
+- **One model call for ordinary turns:** a standalone planner would add latency and another failure point. Deterministic phrase rules only force fresh evidence for explicit change/current-fact requests; the model still decides for other questions.
+- **Relational snapshots over a vector store:** these challenge cases require exact dates, ordered lists, and source history. PostgreSQL indexes and lexical matching keep the system inspectable and dependency-light. Embeddings can be added behind retrieval after measuring paraphrase misses.
+- **Append-only evidence over replacing old answers:** comparisons require “then” and “now” to remain independently inspectable. Search retrieval time is distinct from a source's publication date.
+- **SSE over polling:** memory, plan, search status, sources, and answer tokens share one cancellable request. Search remains the only external agent tool.
 
-Copy `.env.example` to `.env`, start PostgreSQL (`docker compose up db -d`), set `OPENAI_API_KEY` and `TAVILY_API_KEY`, then run `npm install`, `npx prisma migrate deploy`, and `npm run dev`. `OPENAI_MODEL` is configurable.
+## Evaluation and next week
+
+`npm run eval:memory` uses fixed UTC fixtures and a mocked Prisma query to check exact-message recall, off-date exclusions, local timezone boundaries, DST, empty history, and context size. Citation tests detect fabricated URLs, missing citation markers, and citation coverage; plan tests assert that challenge change-checks require current evidence while pure recall does not. These are mechanical checks, not a substitute for claim/source entailment review. Next I would add a human-labeled set with claim-level support judgments, run it against real but recorded provider responses, measure recall/precision and search-call rate, and tune lexical retrieval before considering embeddings. I would also add crash-safe partial-turn recovery and a shared distributed rate limiter before multi-instance deployment.
