@@ -4,7 +4,7 @@ RecallAI is a memory-aware web research assistant built with Next.js, PostgreSQL
 
 ## Run locally
 
-1. Copy `.env.example` to `.env`. Set `TAVILY_API_KEY` and `META_API_KEY` to use the default Meta Muse Spark 1.2 Contributor model. To use OpenAI instead, set `MODEL_PROVIDER="openai"` and `OPENAI_API_KEY`. `META_MODEL` defaults to `muse-spark-1.2-contributor` and can be set to another supported Muse Spark model ID.
+1. Copy `.env.example` to `.env`. **Recommended: use Meta Muse Spark 1.2 Contributor.** Keep `MODEL_PROVIDER="meta"` (the default), set `META_API_KEY`, and set `TAVILY_API_KEY` for web search. The default `META_MODEL` is `muse-spark-1.2-contributor`; you can change it to another supported Muse Spark model ID. See [Meta Muse Spark API documentation](https://dev.meta.ai/docs/muse-spark) for API access and model details. OpenAI is an optional alternative: set `MODEL_PROVIDER="openai"` and `OPENAI_API_KEY`.
 2. Start Postgres: `docker compose up db -d`
 3. Install: `npm install`
 4. Apply migrations: `npx prisma migrate deploy`

@@ -1,40 +1,44 @@
 # RecallAI design
 
-RecallAI is a conversational research agent built around one tool, `web_search`. Its defining behavior is a **temporal evidence ledger**: original messages and retrieved source snapshots are immutable records, so a later answer can compare what was said and cited then with what fresh sources say now.
+RecallAI is a conversational research agent built around one model-visible external tool: `web_search`. Its core design problem is preserving the link between **what the user asked, what the agent knew then, and what current sources support now**. The system keeps original messages and evidence records in PostgreSQL so follow-ups can retrieve exact history and compare it with fresh search results.
 
-## Request path
+## How a turn works
 
 ```text
-user message → persist → retrieve bounded memory + selection reasons
-             → deterministic freshness plan → model/tool loop (≤2 searches, ≤80s)
-             → stream status, sources, tokens → persist answer + claim/source links
+POST /api/chat
+  → validate request, enforce session ownership, persist user message
+  → retrieve bounded temporal, lexical, and reference context + prior cited evidence
+  → force fresh search for explicit change/current-fact requests; otherwise let model decide
+  → run one-tool model loop with a configurable logical search budget and deadline
+  → internally fan out relevant multi-entity searches; retain partial results and failures
+  → stream status, memory, sources, and final tokens over SSE
+  → persist assistant message and links from cited claims to retrieved source snapshots
 ```
 
-PostgreSQL is the system of record. `Message` stores the original conversation. `SearchExecution` records query, status, result snapshot, and duration; each normalized `EvidenceSource` stores its URL, title, snippet, publication date, and retrieval time. Cited answer paragraphs become `EvidenceClaim` rows linked to the exact source snapshots. The earlier answer and its evidence are never overwritten. Follow-up context can therefore contain both the historical claim and its sources, while a new search produces a separate current snapshot.
+The browser uses an HTTP-only anonymous session cookie. The route handlers enforce session ownership; conversation IDs alone do not grant access. PostgreSQL is the system of record. `Message` retains original wording and timestamps; `SearchExecution` records each provider query and result snapshot; `EvidenceSource` records normalized URL, title, snippet, publication date, and retrieval time; `EvidenceClaim` and `EvidenceClaimSource` record which retrieved sources the answer cited. Historical records are preserved by the request flow rather than overwritten during a later search. They are not database-enforced immutable records.
 
-## Memory and planning
+## Memory and time
 
-Retrieval combines exact local-calendar ranges, recent active-chat messages, lexical matches, and nearby messages for references such as “the second one.” Dates are resolved in the browser's IANA timezone into half-open UTC intervals, including daylight-saving transitions. Candidates are deduplicated, ranked, and capped. Each returned item carries its selection reason (date match, lexical match, recency, or nearby reference); the UI exposes these reasons and links to the original conversation. The original message remains the authority for exact recall. Retrieval is intentionally lexical today: paraphrase misses are measured in the challenge set, not hidden behind an unmeasured embedding score.
+Memory retrieval is bounded rather than replaying a whole transcript. It combines recent active-chat messages, lexical matches across the session, nearby context for references, and exact temporal ranges. Explicit dates and relative periods resolve against the browser's IANA timezone into half-open UTC ranges, so “yesterday” means a local calendar day, including daylight-saving boundaries. Each selected message retains its timestamp, conversation ID, and retrieval reason; the UI lets a user inspect and open the source conversation. Original messages remain available for exact recall even when the model receives a bounded excerpt.
 
-`planSearch` is a cheap deterministic guard, not a second model call. Phrases that ask what changed, whether an older answer is still correct, or request current pricing require a fresh search. Other turns leave search choice to the model. The orchestrator accepts one sequential tool call per round, at most two calls, caps total execution at 80 seconds, and gives each provider request a shorter timeout. “The second one” is resolved from retrieved ordered messages before the model forms its search query. Tool arguments are Zod-validated; search output is untrusted data.
+Retrieval is lexical and metadata-based today. This keeps date and entity matches inspectable, but paraphrases can be missed. Embeddings were considered and deferred until the evaluation set shows that lexical recall is the limiting factor; an unmeasured similarity score would make the system harder to explain without guaranteeing better recall.
 
-## Evidence and uncertainty
+## Search and orchestration
 
-The system distinguishes historical evidence from fresh results and tells the model that a result page alone does not prove a change. It should report a changed value only when current evidence supports it and the earlier snapshot establishes a comparable prior value; otherwise it reports the current finding and says the change could not be verified. Citation auditing verifies URL provenance and paragraph citation coverage. Persisted claim links record which returned sources the answer cited. Neither mechanism proves semantic entailment: a human-reviewed or separately judged evaluation remains necessary before claiming that every source truly supports every claim.
+`planSearch` is a deterministic freshness guard, not a second LLM call. It requires fresh evidence for explicit change checks, “still correct” questions, and current pricing/fact requests. On other turns the model chooses whether to use the sole `web_search` tool. The model provider is configurable; Meta Muse Spark 1.2 Contributor is the default, with OpenAI as an alternative.
 
-## Why this design
+`MAX_SEARCH_CALLS` sets the maximum number of logical tool executions (default 2, allowed range 1–5). The bounded loop validates the tool response path, answers every requested tool-call ID, handles unsupported or unexpected parallel calls, and never executes beyond the budget. When the budget is consumed, it disables tools and gives the model a final-answer opportunity. If generation fails or asks for tools again, a bounded fallback cites the evidence already collected or says verification failed. An 80-second request deadline and provider timeouts bound work; cancellation propagates from the request. This avoids spending all available work on tool rounds and then discarding useful results.
 
-- **One model call for ordinary turns:** a standalone planner would add latency and another failure point. Deterministic phrase rules only force fresh evidence for explicit change/current-fact requests; the model still decides for other questions.
-- **Relational snapshots over a vector store:** these challenge cases require exact dates, ordered lists, and source history. PostgreSQL indexes and lexical matching keep the system inspectable and dependency-light. Embeddings can be added behind retrieval after measuring paraphrase misses.
-- **Append-only evidence over replacing old answers:** comparisons require “then” and “now” to remain independently inspectable. Search retrieval time is distinct from a source's publication date.
-- **SSE over polling:** memory, plan, search status, sources, and answer tokens share one cancellable request. Search remains the only external agent tool.
+For list references such as “any of them,” the agent extracts ordered entities from retrieved user messages before search. One `web_search` call can fan out internally to up to five entities and ten provider queries, with concurrency two. Pricing and announcement intent select corresponding official-source-oriented queries. Results from likely official domains are ranked first, URLs are normalized and deduplicated, and per-query failures do not erase successful results. Fanout remains an implementation detail: no additional tool is exposed to the model. The entity parser is rule-based and may miss unrecognized list phrasing; large lists are capped.
+
+## Evidence, citations, and trade-offs
+
+Prior claims and source snapshots are supplied separately from current findings. The prompt requires the agent to compare like with like, cite only retrieved URLs, and say when a change cannot be established. A current price alone does not prove that a price changed. Citation auditing checks URL provenance and paragraph coverage, and the relational links record what the answer cited; neither verifies semantic entailment. This limitation is explicit rather than hidden behind a citation-shaped answer.
+
+PostgreSQL lexical retrieval was chosen over a vector database because the challenge prioritizes exact dates, ordered lists, and inspectable evidence history. A deterministic freshness guard was chosen over a planner model call to reduce latency and failure points; ordinary search selection remains with the model. SSE carries status, memory, sources, and tokens in the same cancellable request instead of polling. Search provider access is isolated behind an interface and mocked in automated tests. The application currently uses Tavily and OpenAI-compatible model APIs; no generated code is executed and retrieved pages are treated as untrusted data.
 
 ## Evaluation and next week
 
-`npm run eval:memory` uses fixed UTC fixtures and a mocked Prisma query to check exact-message recall, off-date exclusions, local timezone boundaries, DST, empty history, and context size. Citation tests detect fabricated URLs, missing citation markers, and citation coverage; plan tests assert that challenge change-checks require current evidence while pure recall does not. These are mechanical checks, not a substitute for claim/source entailment review. Next I would add a human-labeled set with claim-level support judgments, run it against real but recorded provider responses, measure recall/precision and search-call rate, and tune lexical retrieval before considering embeddings. I would also add crash-safe partial-turn recovery and a shared distributed rate limiter before multi-instance deployment.
+`npm test` includes fixed-time memory evaluation and mocked unit tests for temporal boundaries, retrieval, planning, citation provenance, one- and two-call budget exhaustion, unexpected and parallel tool calls, five-entity fanout, partial provider failure, URL deduplication, cancellation, timeout, source retention, and no calls after budget exhaustion. `npm run eval:memory` exercises exact date recall and related retrieval behavior. These tests do not use live credentials, measure Tavily ranking, or prove claim-level source entailment.
 
-## Search budget and multi-entity follow-ups
-
-`MAX_SEARCH_CALLS` configures the maximum number of logical `web_search` executions (default 2, bounded to 1–5). Each execution may fan out internally when selected conversation memory contains a relevant list of multiple entities. It creates up to two queries per entity (official pricing and/or announcements/releases), capped at five entities and ten provider subqueries, with concurrency two and a shared deadline. These remain one model-visible tool call; the agent still has exactly one external tool.
-
-The bounded loop accounts for each logical call, returns a response for every requested call ID (including unsupported and parallel calls), and never executes calls past the budget. After exhaustion the model gets a final turn with tools disabled. If it nevertheless requests a tool or fails/times out, the fallback uses collected search results and source URLs, or explicitly says verification failed when no useful evidence exists. Results gathered before exhaustion are retained. Query-level reports preserve partial failures, and URL deduplication applies across the fanout batch. Tests use fixed times and mocked providers; they do not test live Tavily ranking or semantic entailment.
+With another week, I would add a human-labeled claim-support benchmark and recorded provider fixtures, improve entity extraction from varied list formats, and measure retrieval precision/recall and search-call efficiency before adding embeddings. I would also add crash-safe recovery for interrupted turns and a shared rate limiter before multi-instance deployment. The current in-process rate limit and user-message-before-generation persistence can leave gaps across instances or after an interrupted response.
