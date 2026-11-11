@@ -5,6 +5,7 @@ import { systemPrompt } from "./prompts";
 import { executeSearch } from "@/modules/search/search.service";
 import type { SearchResult } from "@/modules/search/search.types";
 import { db } from "@/lib/db";
+import { planSearch } from "./plan";
 
 const tool: OpenAI.Chat.Completions.ChatCompletionTool = {
   type: "function",
@@ -26,6 +27,12 @@ const tool: OpenAI.Chat.Completions.ChatCompletionTool = {
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 export type AgentEvent =
   | { type: "status"; message: string }
+  | {
+      type: "plan";
+      requiresFreshEvidence: boolean;
+      reason: string;
+      maxSearchCalls: number;
+    }
   | { type: "token"; text: string }
   | { type: "sources"; sources: SearchResult[] };
 
@@ -39,6 +46,16 @@ export async function runAgent(input: {
     content: string;
     createdAt: Date;
     conversationId: string;
+    retrievalReasons?: string[];
+    evidence?: Array<{
+      text: string;
+      sources: Array<{
+        url: string;
+        title: string;
+        retrievedAt: Date;
+        publishedDate: string | null;
+      }>;
+    }>;
   }>;
   onEvent: (event: AgentEvent) => void;
   signal?: AbortSignal;
@@ -57,7 +74,12 @@ export async function runAgent(input: {
     ...(usingMeta ? { baseURL: "https://api.meta.ai/v1" } : {}),
     timeout: 45_000,
   });
+  const deadline = Date.now() + 80_000;
   const model = usingMeta ? env.META_MODEL : env.OPENAI_MODEL;
+  const plan = planSearch(input.message);
+  input.onEvent({ type: "plan", ...plan });
+  if (plan.requiresFreshEvidence)
+    input.onEvent({ type: "status", message: "Checking current sources" });
   const memory = input.memory.map((m) => {
     const localTime = new Intl.DateTimeFormat("en-US", {
       timeZone: input.timeZone,
@@ -71,16 +93,37 @@ export async function runAgent(input: {
       utcTime: m.createdAt.toISOString(),
       conversationId: m.conversationId,
       content: m.content,
+      retrievalReasons: m.retrievalReasons,
+      evidence: m.evidence?.slice(0, 2).map((claim) => ({
+        text: claim.text.slice(0, 400),
+        sources: claim.sources.slice(0, 2).map((source) => ({
+          ...source,
+          title: source.title.slice(0, 160),
+          url: source.url.slice(0, 500),
+        })),
+      })),
     };
   });
   const boundedMemory: typeof memory = [];
   let memoryCharacters = 0;
   for (const record of memory.toReversed()) {
-    if (boundedMemory.length >= 20 || memoryCharacters >= 20_000) break;
-    const available = Math.min(4_000, 20_000 - memoryCharacters);
-    const content = record.content.slice(0, available);
-    boundedMemory.push({ ...record, content });
-    memoryCharacters += content.length;
+    if (boundedMemory.length >= 20) break;
+    const fixedSize = JSON.stringify({ ...record, content: "" }).length;
+    const available = Math.min(4_000, 20_000 - memoryCharacters - fixedSize);
+    if (available <= 0) break;
+    const bounded = { ...record, content: record.content.slice(0, available) };
+    while (
+      bounded.content.length > 0 &&
+      JSON.stringify(bounded).length > 20_000 - memoryCharacters
+    ) {
+      bounded.content = bounded.content.slice(
+        0,
+        Math.floor(bounded.content.length * 0.8),
+      );
+    }
+    if (JSON.stringify(bounded).length > 20_000 - memoryCharacters) break;
+    boundedMemory.push(bounded);
+    memoryCharacters += JSON.stringify(bounded).length;
   }
   boundedMemory.reverse();
   const messages: ChatMessage[] = [
@@ -95,8 +138,11 @@ export async function runAgent(input: {
     { role: "user", content: input.message },
   ];
   let sources: SearchResult[] = [];
-  for (let round = 0; round <= 2; round++) {
-    const allowTool = round < 2;
+  for (let round = 0; round <= plan.maxSearchCalls; round++) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0)
+      throw new Error("Agent execution time budget reached.");
+    const allowTool = round < plan.maxSearchCalls;
     const stream = await client.chat.completions.create(
       {
         model,
@@ -105,12 +151,15 @@ export async function runAgent(input: {
         ...(allowTool
           ? {
               tools: [tool],
-              tool_choice: "auto" as const,
+              tool_choice:
+                round === 0 && plan.requiresFreshEvidence
+                  ? ("required" as const)
+                  : ("auto" as const),
               parallel_tool_calls: false,
             }
           : {}),
       },
-      { signal: input.signal },
+      { signal: input.signal, timeout: Math.min(45_000, remainingMs) },
     );
     let answer = "";
     const calls = new Map<
@@ -173,7 +222,14 @@ export async function runAgent(input: {
         )
           query = args.query.slice(0, 400);
         const result = await executeSearch(args);
-        sources = result.results;
+        sources = [
+          ...new Map(
+            [...sources, ...result.results].map((source) => [
+              source.url,
+              source,
+            ]),
+          ).values(),
+        ];
         await db.searchExecution.create({
           data: {
             conversationId: input.conversationId,
@@ -182,6 +238,14 @@ export async function runAgent(input: {
             status: result.results.length ? "SUCCESS" : "EMPTY",
             results: result.results as unknown as Prisma.InputJsonValue,
             durationMs: result.durationMs,
+            sources: {
+              create: result.results.map((source) => ({
+                title: source.title,
+                url: source.url,
+                snippet: source.snippet,
+                publishedDate: source.publishedDate,
+              })),
+            },
           },
         });
         input.onEvent({ type: "sources", sources });
