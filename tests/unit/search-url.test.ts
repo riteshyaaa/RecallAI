@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSearchUrl } from "@/modules/search/tavily.provider";
+import { normalizeSearchUrl } from "@/modules/search/search-url";
 
 describe("normalizeSearchUrl", () => {
   it("removes fragments and tracking parameters and sorts query parameters", () => {
