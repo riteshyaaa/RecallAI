@@ -3,26 +3,38 @@ import type { SearchProvider, SearchResponse } from "./search.types";
 import { normalizeSearchUrl } from "./search-url";
 
 export class TavilyProvider implements SearchProvider {
+  constructor(
+    private readonly apiKey = env.TAVILY_API_KEY,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
+
   async search({
     query,
     searchDepth,
     maxResults,
+    signal,
+    timeoutMs = 12_000,
   }: {
     query: string;
     searchDepth: "basic" | "advanced";
     maxResults: number;
+    signal?: AbortSignal;
+    timeoutMs?: number;
   }): Promise<SearchResponse> {
-    if (!env.TAVILY_API_KEY) throw new Error("Web search is not configured.");
+    if (!this.apiKey) throw new Error("Web search is not configured.");
     const started = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12_000);
+    const abortFromParent = () => controller.abort(signal?.reason);
+    if (signal?.aborted) abortFromParent();
+    else signal?.addEventListener("abort", abortFromParent, { once: true });
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch("https://api.tavily.com/search", {
+      const response = await this.fetchImpl("https://api.tavily.com/search", {
         method: "POST",
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${env.TAVILY_API_KEY}`,
+          Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
           query,
@@ -65,9 +77,21 @@ export class TavilyProvider implements SearchProvider {
       if (results.some((result) => typeof result.score === "number")) {
         results.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
       }
-      return { results, durationMs: Date.now() - started };
+      const durationMs = Date.now() - started;
+      return {
+        results,
+        durationMs,
+        queries: [
+          {
+            query,
+            status: results.length ? "SUCCESS" : "EMPTY",
+            durationMs,
+          },
+        ],
+      };
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abortFromParent);
     }
   }
 }

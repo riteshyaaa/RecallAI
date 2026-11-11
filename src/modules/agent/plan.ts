@@ -5,7 +5,7 @@ export type SearchPlan = {
 };
 
 /** Cheap deterministic guard for requests whose answer depends on today's facts. */
-export function planSearch(message: string): SearchPlan {
+export function planSearch(message: string, maxSearchCalls = 2): SearchPlan {
   const lower = message.toLowerCase();
   const changeCheck =
     /\b(changed|change|since then|since we|still (?:correct|accurate|true)|up[- ]to[- ]date|what(?:'s| has) new|any updates?)\b/.test(
@@ -22,12 +22,16 @@ export function planSearch(message: string): SearchPlan {
       : currentFact
         ? "current-fact"
         : "model-choice",
-    maxSearchCalls: 2,
+    maxSearchCalls,
   };
 }
 
-export function evaluateSearchTrace(message: string, searchCalls: number) {
-  const plan = planSearch(message);
+export function evaluateSearchTrace(
+  message: string,
+  searchCalls: number,
+  maxSearchCalls = 2,
+) {
+  const plan = planSearch(message, maxSearchCalls);
   const requiredSearchSatisfied =
     !plan.requiresFreshEvidence || searchCalls > 0;
   const unnecessarySearch =

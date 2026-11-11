@@ -118,6 +118,7 @@ export async function POST(request: Request) {
             signal: request.signal,
             onEvent: (event) => {
               if (event.type === "token") answer += event.text;
+              if (event.type === "reset") answer = "";
               if (event.type === "sources") sources = event.sources;
               send(event);
             },

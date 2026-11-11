@@ -6,6 +6,11 @@ import { executeSearch } from "@/modules/search/search.service";
 import type { SearchResult } from "@/modules/search/search.types";
 import { db } from "@/lib/db";
 import { planSearch } from "./plan";
+import {
+  runBoundedToolLoop,
+  type RequestedToolCall,
+} from "./tool-loop";
+import { resolveSearchEntities } from "@/modules/search/entity-fanout";
 
 const tool: OpenAI.Chat.Completions.ChatCompletionTool = {
   type: "function",
@@ -32,8 +37,10 @@ export type AgentEvent =
       requiresFreshEvidence: boolean;
       reason: string;
       maxSearchCalls: number;
+      entities: string[];
     }
   | { type: "token"; text: string }
+  | { type: "reset" }
   | { type: "sources"; sources: SearchResult[] };
 
 export async function runAgent(input: {
@@ -76,8 +83,9 @@ export async function runAgent(input: {
   });
   const deadline = Date.now() + 80_000;
   const model = usingMeta ? env.META_MODEL : env.OPENAI_MODEL;
-  const plan = planSearch(input.message);
-  input.onEvent({ type: "plan", ...plan });
+  const plan = planSearch(input.message, env.MAX_SEARCH_CALLS);
+  const entities = resolveSearchEntities(input.message, input.memory);
+  input.onEvent({ type: "plan", ...plan, entities });
   if (plan.requiresFreshEvidence)
     input.onEvent({ type: "status", message: "Checking current sources" });
   const memory = input.memory.map((m) => {
@@ -137,142 +145,116 @@ export async function runAgent(input: {
     },
     { role: "user", content: input.message },
   ];
-  let sources: SearchResult[] = [];
-  for (let round = 0; round <= plan.maxSearchCalls; round++) {
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0)
-      throw new Error("Agent execution time budget reached.");
-    const allowTool = round < plan.maxSearchCalls;
-    const stream = await client.chat.completions.create(
-      {
-        model,
-        messages,
-        stream: true,
-        ...(allowTool
-          ? {
-              tools: [tool],
-              tool_choice:
-                round === 0 && plan.requiresFreshEvidence
-                  ? ("required" as const)
-                  : ("auto" as const),
-              parallel_tool_calls: false,
-            }
-          : {}),
-      },
-      { signal: input.signal, timeout: Math.min(45_000, remainingMs) },
-    );
-    let answer = "";
-    const calls = new Map<
-      number,
-      { id: string; name: string; arguments: string }
-    >();
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
-      if (delta?.content) {
-        answer += delta.content;
-        input.onEvent({ type: "token", text: delta.content });
-      }
-      for (const part of delta?.tool_calls ?? []) {
-        const call = calls.get(part.index) ?? {
-          id: "",
-          name: "",
-          arguments: "",
-        };
-        if (part.id) call.id += part.id;
-        if (part.function?.name) call.name += part.function.name;
-        if (part.function?.arguments) call.arguments += part.function.arguments;
-        calls.set(part.index, call);
-      }
-    }
-    if (calls.size === 0) return { answer, sources };
-    if (!allowTool) throw new Error("Search tool execution limit reached.");
-    const requested = [...calls.entries()]
-      .sort(([a], [b]) => a - b)
-      .slice(0, 1);
-    const toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] =
-      requested.map(([, call]) => ({
-        id: call.id,
-        type: "function",
-        function: { name: call.name, arguments: call.arguments },
-      }));
-    messages.push({
-      role: "assistant",
-      content: answer || null,
-      tool_calls: toolCalls,
-    });
-    for (const call of toolCalls) {
-      if (call.type !== "function") continue;
-      if (call.function.name !== "web_search") {
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify({ error: "Unsupported tool." }),
-        });
-        continue;
-      }
-      input.onEvent({ type: "status", message: "Searching the web" });
-      let query = "invalid query";
+  const result = await runBoundedToolLoop({
+    messages,
+    maxSearchCalls: plan.maxSearchCalls,
+    requiresFreshEvidence: plan.requiresFreshEvidence,
+    deadlineAt: deadline,
+    signal: input.signal,
+    entities,
+    onEvent: input.onEvent,
+    executeSearch: async (args, signal) => {
+      const result = await executeSearch(args, {
+        entities,
+        intent: input.message,
+        signal,
+        deadlineAt: deadline,
+      });
+      const reports = result.queries;
       try {
-        const args: unknown = JSON.parse(call.function.arguments);
-        if (
-          typeof args === "object" &&
-          args !== null &&
-          "query" in args &&
-          typeof args.query === "string"
-        )
-          query = args.query.slice(0, 400);
-        const result = await executeSearch(args);
-        sources = [
-          ...new Map(
-            [...sources, ...result.results].map((source) => [
-              source.url,
-              source,
-            ]),
-          ).values(),
-        ];
-        await db.searchExecution.create({
-          data: {
-            conversationId: input.conversationId,
-            messageId: input.messageId,
-            query,
-            status: result.results.length ? "SUCCESS" : "EMPTY",
-            results: result.results as unknown as Prisma.InputJsonValue,
-            durationMs: result.durationMs,
-            sources: {
-              create: result.results.map((source) => ({
-                title: source.title,
-                url: source.url,
-                snippet: source.snippet,
-                publishedDate: source.publishedDate,
-              })),
-            },
-          },
-        });
-        input.onEvent({ type: "sources", sources });
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify(result),
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Search unavailable";
-        await db.searchExecution.create({
-          data: {
-            conversationId: input.conversationId,
-            messageId: input.messageId,
-            query,
-            status: "FAILED",
-            results: { error: message } as Prisma.InputJsonValue,
-          },
-        });
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify({ error: message }),
-        });
+        await Promise.all(
+          reports.map((report) => {
+            const queryResults = result.results.filter(
+              (source) => source.searchQuery === report.query,
+            );
+            return db.searchExecution.create({
+              data: {
+                conversationId: input.conversationId,
+                messageId: input.messageId,
+                query: report.query,
+                status:
+                  report.status === "SUCCESS"
+                    ? "SUCCESS"
+                    : report.status === "FAILED"
+                      ? "FAILED"
+                      : "EMPTY",
+                results: queryResults as unknown as Prisma.InputJsonValue,
+                durationMs: report.durationMs,
+                ...(report.error
+                  ? {
+                      results: {
+                        results: queryResults,
+                        error: report.error,
+                      } as unknown as Prisma.InputJsonValue,
+                    }
+                  : {}),
+                sources: {
+                  create: queryResults.map((source) => ({
+                    title: source.title,
+                    url: source.url,
+                    snippet: source.snippet,
+                    publishedDate: source.publishedDate,
+                  })),
+                },
+              },
+            });
+          }),
+        );
+      } catch {
+        console.error("Unable to persist one or more search snapshots.");
       }
-    }
-  }
-  throw new Error("The search step did not complete.");
+      return result;
+    },
+    callModel: async ({
+      messages,
+      toolsEnabled,
+      toolChoice,
+      timeoutMs,
+      onToken,
+    }) => {
+      const stream = await client.chat.completions.create(
+        {
+          model,
+          messages,
+          stream: true,
+          ...(toolsEnabled
+            ? {
+                tools: [tool],
+                tool_choice: toolChoice,
+                parallel_tool_calls: false,
+              }
+            : {}),
+        },
+        { signal: input.signal, timeout: timeoutMs },
+      );
+      let text = "";
+      const calls = new Map<number, RequestedToolCall>();
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) {
+          text += delta.content;
+          onToken(delta.content);
+        }
+        for (const part of delta?.tool_calls ?? []) {
+          const call = calls.get(part.index) ?? {
+            id: "",
+            name: "",
+            arguments: "",
+          };
+          if (part.id) call.id += part.id;
+          if (part.function?.name) call.name += part.function.name;
+          if (part.function?.arguments)
+            call.arguments += part.function.arguments;
+          calls.set(part.index, call);
+        }
+      }
+      return {
+        text,
+        toolCalls: [...calls.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, call]) => call),
+      };
+    },
+  });
+  return result;
 }

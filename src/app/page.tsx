@@ -149,6 +149,14 @@ export default function Home() {
                   : message,
               ),
             );
+          if (data.type === "reset")
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === assistantId
+                  ? { ...message, content: "" }
+                  : message,
+              ),
+            );
           if (data.type === "sources")
             setMessages((previous) =>
               previous.map((message) =>
