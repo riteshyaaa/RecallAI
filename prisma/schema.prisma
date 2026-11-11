@@ -27,31 +27,32 @@ model Session {
 }
 
 model Conversation {
-  id           String              @id @default(cuid())
-  sessionId    String
-  title        String              @default("New conversation")
-  createdAt    DateTime            @default(now())
-  updatedAt    DateTime            @updatedAt
-  lastMessageAt DateTime            @default(now())
-  session      Session             @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  messages     Message[]
-  summary      ConversationSummary?
-  searches     SearchExecution[]
+  id            String               @id @default(cuid())
+  sessionId     String
+  title         String               @default("New conversation")
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  lastMessageAt DateTime             @default(now())
+  session       Session              @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  messages      Message[]
+  summary       ConversationSummary?
+  searches      SearchExecution[]
 
   @@index([sessionId, lastMessageAt])
   @@index([lastMessageAt])
 }
 
 model Message {
-  id             String           @id @default(cuid())
+  id             String            @id @default(cuid())
   conversationId String
   role           MessageRole
-  content        String           @db.Text
+  content        String            @db.Text
   metadata       Json?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  conversation   Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   searches       SearchExecution[]
+  evidenceClaims EvidenceClaim[]
 
   @@index([conversationId, createdAt])
   @@index([createdAt])
@@ -66,16 +67,53 @@ model ConversationSummary {
 }
 
 model SearchExecution {
-  id             String       @id @default(cuid())
+  id             String           @id @default(cuid())
   conversationId String
   messageId      String?
   query          String
-  status         SearchStatus @default(PENDING)
+  status         SearchStatus     @default(PENDING)
   results        Json?
   durationMs     Int?
-  createdAt      DateTime     @default(now())
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  message        Message?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  createdAt      DateTime         @default(now())
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message        Message?         @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  sources        EvidenceSource[]
 
   @@index([conversationId, createdAt])
+}
+
+model EvidenceSource {
+  id                String                @id @default(cuid())
+  searchExecutionId String
+  title             String
+  url               String
+  snippet           String                @db.Text
+  publishedDate     String?
+  retrievedAt       DateTime              @default(now())
+  searchExecution   SearchExecution       @relation(fields: [searchExecutionId], references: [id], onDelete: Cascade)
+  claims            EvidenceClaimSource[]
+
+  @@unique([searchExecutionId, url])
+  @@index([url, retrievedAt])
+}
+
+model EvidenceClaim {
+  id        String                @id @default(cuid())
+  messageId String
+  text      String                @db.Text
+  createdAt DateTime              @default(now())
+  message   Message               @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  sources   EvidenceClaimSource[]
+
+  @@index([messageId, createdAt])
+}
+
+model EvidenceClaimSource {
+  claimId  String
+  sourceId String
+  claim    EvidenceClaim  @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  source   EvidenceSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@id([claimId, sourceId])
+  @@index([sourceId])
 }

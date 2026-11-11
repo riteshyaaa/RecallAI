@@ -55,6 +55,7 @@ export class TavilyProvider implements SearchProvider {
               snippet: r.content?.trim() || "",
               publishedDate: r.published_date,
               score: r.score,
+              retrievedAt: new Date().toISOString(),
             },
           ];
         } catch {

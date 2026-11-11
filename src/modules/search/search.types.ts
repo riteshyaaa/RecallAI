@@ -4,6 +4,7 @@ export type SearchResult = {
   snippet: string;
   publishedDate?: string;
   score?: number;
+  retrievedAt?: string;
 };
 export type SearchResponse = { results: SearchResult[]; durationMs: number };
 export interface SearchProvider {
