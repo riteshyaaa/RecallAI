@@ -7,6 +7,7 @@ export type MemoryCandidate = {
   content: string;
   createdAt: Date;
   conversationId: string;
+  retrievalReasons?: string[];
 };
 
 type CandidateGroups = {
@@ -228,9 +229,9 @@ export function rankMemoryCandidates(
   const terms = extractTerms(query);
   const candidates = new Map<
     string,
-    { message: MemoryCandidate; score: number }
+    { message: MemoryCandidate; score: number; reasons: string[] }
   >();
-  const add = (messages: MemoryCandidate[], base: number) => {
+  const add = (messages: MemoryCandidate[], base: number, reason: string) => {
     for (const message of messages) {
       const ageHours = Math.max(
         0,
@@ -241,14 +242,22 @@ export function rankMemoryCandidates(
       ).length;
       const score = base + lexicalHits * 4 + 12 / (1 + ageHours / 24);
       const existing = candidates.get(message.id);
-      if (!existing || score > existing.score)
-        candidates.set(message.id, { message, score });
+      if (!existing)
+        candidates.set(message.id, { message, score, reasons: [reason] });
+      else {
+        if (score > existing.score) existing.score = score;
+        if (!existing.reasons.includes(reason)) existing.reasons.push(reason);
+      }
     }
   };
-  add(groups.recent, 55);
-  add(groups.neighboring, 35);
-  add(groups.related, 20);
-  add(groups.temporal, 100);
+  add(groups.recent, 55, "Recent message in this conversation");
+  add(groups.neighboring, 35, "Nearby message helps resolve a reference");
+  add(groups.related, 20, "Matched terms from the current question");
+  add(
+    groups.temporal,
+    100,
+    "Message timestamp falls within the requested date",
+  );
 
   return [...candidates.values()]
     .sort(
@@ -257,7 +266,7 @@ export function rankMemoryCandidates(
         b.message.createdAt.getTime() - a.message.createdAt.getTime(),
     )
     .slice(0, 24)
-    .map(({ message }) => message)
+    .map(({ message, reasons }) => ({ ...message, retrievalReasons: reasons }))
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 }
 

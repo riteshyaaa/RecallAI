@@ -6,15 +6,12 @@ import { ChatComposer } from "@/components/chat/ChatComposer";
 import { ConversationSidebar } from "@/components/chat/ConversationSidebar";
 import { MessageView } from "@/components/chat/MessageView";
 import { Welcome } from "@/components/chat/Welcome";
-import type { ChatMessage, Conversation, Source } from "@/types/chat";
-
-type MemoryReference = {
-  id: string;
-  role: string;
-  content: string;
-  createdAt: string;
-  conversationId: string;
-};
+import type {
+  ChatMessage,
+  Conversation,
+  MemoryReference,
+  Source,
+} from "@/types/chat";
 
 export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -137,6 +134,12 @@ export default function Home() {
           const data = JSON.parse(packet.slice(6));
           if (data.type === "conversation") setActiveId(data.conversationId);
           if (data.type === "status") setStatus(data.message);
+          if (data.type === "plan")
+            setStatus(
+              data.requiresFreshEvidence
+                ? "Planning a fresh evidence check"
+                : "Checking conversation context",
+            );
           if (data.type === "memory") setMemory(data.items);
           if (data.type === "token")
             setMessages((previous) =>
@@ -256,6 +259,14 @@ export default function Home() {
                             </span>
                           </p>
                           <p className="mt-1">{item.content.slice(0, 220)}</p>
+                          {item.retrievalReasons?.map((reason) => (
+                            <p
+                              key={reason}
+                              className="mt-1 text-xs text-indigo-600"
+                            >
+                              Retrieved because: {reason}
+                            </p>
+                          ))}
                           {item.conversationId !== activeId && (
                             <button
                               className="mt-1 text-xs font-medium text-indigo-700 underline"

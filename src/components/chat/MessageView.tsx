@@ -61,7 +61,15 @@ export function MessageView({
               className="flex max-w-64 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600"
             >
               <ExternalLink size={12} />
-              <span className="truncate">{source.title}</span>
+              <span className="min-w-0 truncate">
+                {source.title}
+                {source.retrievedAt && (
+                  <span className="ml-1 text-slate-400">
+                    · retrieved{" "}
+                    {new Date(source.retrievedAt).toLocaleDateString()}
+                  </span>
+                )}
+              </span>
             </a>
           ))}
         </div>
