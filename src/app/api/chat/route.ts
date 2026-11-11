@@ -5,6 +5,7 @@ import { chatSchema } from "@/lib/validation";
 import { retrieveMemory } from "@/modules/memory/retrieval.service";
 import { runAgent } from "@/modules/agent/orchestrator";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { persistAnswerEvidence } from "@/modules/search/evidence.service";
 
 const encode = (data: unknown) => `data: ${JSON.stringify(data)}\n\n`;
 export async function POST(request: Request) {
@@ -81,12 +82,39 @@ export async function POST(request: Request) {
               .map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
           });
           const relevantMemory = memory.filter((m) => m.id !== userMessage.id);
+          const historicalClaims = relevantMemory.length
+            ? await db.evidenceClaim.findMany({
+                where: {
+                  messageId: { in: relevantMemory.map((item) => item.id) },
+                },
+                include: { sources: { include: { source: true } } },
+                take: 24,
+              })
+            : [];
+          const claimsByMessage = new Map<string, typeof historicalClaims>();
+          for (const claim of historicalClaims) {
+            const existing = claimsByMessage.get(claim.messageId) ?? [];
+            existing.push(claim);
+            claimsByMessage.set(claim.messageId, existing);
+          }
+          const memoryWithEvidence = relevantMemory.map((item) => ({
+            ...item,
+            evidence: (claimsByMessage.get(item.id) ?? []).map((claim) => ({
+              text: claim.text,
+              sources: claim.sources.map(({ source }) => ({
+                url: source.url,
+                title: source.title,
+                retrievedAt: source.retrievedAt,
+                publishedDate: source.publishedDate,
+              })),
+            })),
+          }));
           const result = await runAgent({
             message: body.data.message,
             timeZone: body.data.timezone,
             conversationId: conversation.id,
             messageId: userMessage.id,
-            memory: relevantMemory,
+            memory: memoryWithEvidence,
             signal: request.signal,
             onEvent: (event) => {
               if (event.type === "token") answer += event.text;
@@ -106,6 +134,11 @@ export async function POST(request: Request) {
               },
             },
           });
+          try {
+            await persistAnswerEvidence(assistant.id, userMessage.id, answer);
+          } catch {
+            console.error("Unable to persist answer evidence links.");
+          }
           await db.conversation.update({
             where: { id: conversation.id },
             data: { lastMessageAt: assistant.createdAt },
