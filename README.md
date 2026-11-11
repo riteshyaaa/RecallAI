@@ -14,7 +14,7 @@ Open `http://localhost:3000`. For Docker deployment, configure `.env` and run `d
 
 ## Commands
 
-`npm run lint` runs ESLint. `npm test` runs unit tests. `npm run build` verifies production compilation. Tests do not make live provider calls.
+`npm run lint` runs ESLint. `npm test` runs unit and offline evaluation tests. `npm run eval:memory` runs the challenge memory and citation evaluation set by itself. `npm run build` verifies production compilation. Automated tests do not make live provider calls.
 
 ## Environment
 
