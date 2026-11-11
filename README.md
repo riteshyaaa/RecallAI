@@ -4,13 +4,14 @@ RecallAI is a memory-aware web research assistant built with Next.js, PostgreSQL
 
 ## Run locally
 
-1. Copy `.env.example` to `.env`. **Recommended: use Meta Muse Spark 1.2 Contributor.** Keep `MODEL_PROVIDER="meta"` (the default), set `META_API_KEY`, and set `TAVILY_API_KEY` for web search. The default `META_MODEL` is `muse-spark-1.2-contributor`; you can change it to another supported Muse Spark model ID. See [Meta Muse Spark API documentation](https://dev.meta.ai/docs/muse-spark) for API access and model details. OpenAI is an optional alternative: set `MODEL_PROVIDER="openai"` and `OPENAI_API_KEY`.
-2. Start Postgres: `docker compose up db -d`
-3. Install: `npm install`
-4. Apply migrations: `npx prisma migrate deploy`
-5. Start: `npm run dev`
+1. Copy `.env.example` to `.env`.
+2. **Recommended: use a Meta API key.** The default model is Meta Muse Spark 1.2 Contributor (`MODEL_PROVIDER="meta"`, `META_MODEL="muse-spark-1.2-contributor"`). Set `META_API_KEY` and `TAVILY_API_KEY`. See [Meta Muse Spark API docs](https://dev.meta.ai/docs/muse-spark). OpenAI is optional: set `MODEL_PROVIDER="openai"` and `OPENAI_API_KEY`.
+3. Start Postgres: `docker compose up db -d`.
+4. Install dependencies: `npm install`.
+5. Apply migrations: `npx prisma migrate deploy`.
+6. Start RecallAI: `npm run dev`.
 
-Open `http://localhost:3000`. For Docker deployment, configure `.env` and run `docker compose up --build`.
+Open `http://localhost:3000`. For Docker, configure `.env` and run `docker compose up --build`.
 
 ## Commands
 
