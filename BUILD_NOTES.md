@@ -87,6 +87,28 @@ Model selection is environment-driven: `MODEL_PROVIDER=meta` uses the Meta OpenA
 
 ## Main problems addressed and why
 
+### Budget exhaustion discarded evidence and blocked the final answer
+
+**Problem:** The prior orchestration loop allowed a final provider response to contain a tool call after the search allowance was used, then surfaced a generic “execution limit reached” error. It also only handled the first tool call in a response, leaving parallel call IDs without valid tool responses. This discarded evidence already retrieved and prevented a useful answer.
+
+**Implementation:** `runBoundedToolLoop` owns the logical search budget and final-answer transition. `MAX_SEARCH_CALLS` is configurable (default 2, bounded from 1 to 5). It accounts for calls before executing, answers every requested tool call ID, safely rejects unsupported tools, disables tools after the budget, and allows a bounded final attempt. It retains accumulated sources across turns and returns a citation-bearing evidence fallback, or states verification was unsuccessful if nothing useful was found. The existing request cancellation and total deadline are passed into model and search work; there is no unbounded retry loop. Intermediate assistant text is reset in the SSE client when the model returns a tool call, preventing internal reasoning/tool-call text from appearing as the final answer.
+
+### One entity list previously consumed several model search rounds
+
+**Problem:** A request to check changes across five previously discussed CRM products could trigger separate model tool-call rounds. That needlessly consumed the logical search budget before the final response and could leave some entities unchecked.
+
+**Implementation:** `entity-fanout.ts` extracts ordered names from relevant memory and resolves list references such as “them”, “all of them”, and ordinal references. The one existing `web_search` invocation expands to bounded provider queries for official pricing and/or announcements/releases. The batch is capped at five entities/ten subqueries, runs two provider requests concurrently, respects the shared deadline and per-provider timeout, and preserves per-query success/failure reports. Results carry the originating subquery and retrieval time; URL normalization/deduplication occurs across the batch, with likely official domain matches prioritized. Individual failures do not erase successful results. Only `web_search` is exposed to the model.
+
+### Evidence and known limitations
+
+The existing historical `EvidenceSource`, `EvidenceClaim`, and `EvidenceClaimSource` records and persistence flow remain intact. Each fanout query is saved as a `SearchExecution`, and returned sources continue through the existing evidence and citation path. The prompt tells the model to compare old/current evidence only where comparable, cite retrieved URLs, and identify insufficiently researched entities. A source page/result is not proof that a change occurred; semantic claim entailment is still not automatically verified.
+
+The current entity parser is intentionally lightweight and relies on ordered list phrasing in retrieved message text; it can miss entities in unusual prose or unrecognized list formats. It is limited to five names and a fixed query fanout, so very long lists are only partially researched. Tavily result quality and ranking are provider-dependent. A shared distributed rate limiter, automatic partial-turn recovery, robust entity extraction, and claim-level entailment evaluation remain future work.
+
+### Regression coverage
+
+Added offline tests cover one logical request for five entities, single/second-call budget exhaustion, model tool requests after exhaustion, safe parallel/unsupported tool responses, partial provider failure, URL deduplication, citation retention, historical/current evidence comparison, cancellation and timeout, and no additional provider calls after the budget. These use mocked search/model behavior and fixed fixtures and require no live credentials. No live provider reliability or factual-quality claim is implied by passing unit tests.
+
 ### Exact recall versus prompt growth
 
 **Problem:** Sending all conversation history can make requests slower, more expensive, and less relevant; aggressive summarization can lose exact wording and timestamps. **Choice:** Keep originals in PostgreSQL and retrieve a bounded set with explicit timestamps and conversation IDs. Summary fields remain available for a future implementation but are not used as a shortcut for exact recall.
