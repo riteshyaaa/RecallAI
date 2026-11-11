@@ -1,6 +1,6 @@
 # RecallAI
 
-RecallAI is a memory-aware web research assistant built with Next.js, PostgreSQL/Prisma, OpenAI-compatible tool calling, and Tavily. It keeps conversations across refreshes using a secure, HTTP-only anonymous session cookie. Search snapshots and cited answer claims are stored separately so follow-ups can compare what was known then with fresh evidence now.
+RecallAI is a research assistant that remembers what you asked and checks what has changed. It combines conversation memory, date-aware recall, and live web search to answer follow-ups with relevant sources. Ask what you discussed last week, revisit a shortlist, or compare an old answer with current evidence. RecallAI keeps historical messages and search evidence so it can distinguish what it found then from what it finds now.
 
 ## Run locally
 
@@ -15,10 +15,24 @@ Open `http://localhost:3000`. For Docker, configure `.env` and run `docker compo
 
 ## Commands
 
-`npm run lint` runs ESLint. `npm test` runs unit and offline evaluation tests. `npm run eval:memory` checks historical retrieval, timezone boundaries, empty-history behavior, freshness planning, and citation provenance/coverage. `npm run build` verifies production compilation. Automated tests do not make live provider calls. The citation checks do not determine semantic claim entailment; see [DESIGN.md](DESIGN.md).
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start local development server |
+| `npm test` | Run offline unit and evaluation tests |
+| `npm run eval:memory` | Evaluate historical and date-based memory retrieval |
+| `npm run lint` | Check code style |
+| `npm run build` | Create a production build |
 
 ## Environment
 
-`DATABASE_URL`, `MODEL_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `META_API_KEY`, `META_MODEL`, and `TAVILY_API_KEY` are documented in `.env.example`. Meta Muse Spark 1.2 Contributor is the default provider/model; set `META_API_KEY` to use it. Only the selected model provider's key is required. The Meta provider uses the OpenAI-compatible endpoint at `https://api.meta.ai/v1`; no keys are sent to the browser.
+Copy `.env.example` to `.env` and set:
 
-See [DESIGN.md](DESIGN.md) for the one-page architecture note and trade-offs. See [BUILD_NOTES.md](BUILD_NOTES.md) for the implementation walkthrough, addressed problems, detailed data flow, test results, and known limitations.
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `META_API_KEY` | **Recommended:** Meta Muse Spark 1.2 Contributor (the default model) |
+| `TAVILY_API_KEY` | Web search |
+| `MODEL_PROVIDER`, `META_MODEL` | Optional model configuration; defaults to `meta` and `muse-spark-1.2-contributor` |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | Optional OpenAI alternative (`MODEL_PROVIDER="openai"`) |
+
+Provider keys are used server-side and are not sent to the browser. See [DESIGN.md](DESIGN.md) for architecture and trade-offs.
