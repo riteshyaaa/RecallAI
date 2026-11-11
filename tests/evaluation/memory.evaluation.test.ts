@@ -112,6 +112,40 @@ describe("challenge-set memory evaluation", () => {
       expect(retrieved.length).toBeLessThanOrEqual(24);
     });
   }
+
+  it("meets aggregate exact-recall and off-date false-match targets", async () => {
+    let expectedCount = 0;
+    let recoveredCount = 0;
+    let excludedCount = 0;
+    let excludedRetrievedCount = 0;
+
+    for (const scenario of memoryEvaluationCases) {
+      emulatePrismaMessageQuery(scenario);
+      const retrieved = await retrieveMemory(
+        evaluationSessionId,
+        scenario.activeConversationId,
+        scenario.prompt,
+        scenario.timeZone,
+        new Date(scenario.now),
+      );
+      const ids = new Set(retrieved.map((message) => message.id));
+      expectedCount += scenario.expectedMessageIds.length;
+      recoveredCount += scenario.expectedMessageIds.filter((id) =>
+        ids.has(id),
+      ).length;
+      excludedCount += scenario.excludedMessageIds.length;
+      excludedRetrievedCount += scenario.excludedMessageIds.filter((id) =>
+        ids.has(id),
+      ).length;
+    }
+
+    const exactMessageRecall = recoveredCount / expectedCount;
+    const offDateFalseMatchRate = excludedRetrievedCount / excludedCount;
+    expect({ exactMessageRecall, offDateFalseMatchRate }).toEqual({
+      exactMessageRecall: 1,
+      offDateFalseMatchRate: 0,
+    });
+  });
 });
 
 describe("source-backed answer evaluation", () => {
@@ -130,6 +164,7 @@ describe("source-backed answer evaluation", () => {
     );
     expect(audit.passed).toBe(true);
     expect(audit.citationCount).toBe(1);
+    expect(audit.citationCoverageRate).toBe(1);
     expect(audit.invalidCitations).toEqual([]);
     expect(audit.uncitedParagraphs).toEqual([]);
   });
@@ -143,5 +178,6 @@ describe("source-backed answer evaluation", () => {
     expect(audit.invalidCitations).toEqual(["https://fake.example/plans"]);
     expect(audit.uncitedParagraphs).toHaveLength(1);
     expect(audit.uncitedParagraphs[0]).toContain("HubSpot");
+    expect(audit.citationCoverageRate).toBe(0.5);
   });
 });

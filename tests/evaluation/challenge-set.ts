@@ -24,6 +24,25 @@ export const evaluationSessionId = sessionId;
 
 export const memoryEvaluationCases: MemoryEvaluationCase[] = [
   {
+    name: "returns no invented history when the requested day has no messages",
+    prompt: "What did I ask yesterday?",
+    now: "2026-11-11T08:00:00.000Z",
+    timeZone: "Asia/Kolkata",
+    activeConversationId: "today-chat",
+    messages: [
+      {
+        id: "older-unrelated-question",
+        sessionId,
+        conversationId: "old-chat",
+        role: "USER",
+        content: "How does Postgres replication work?",
+        createdAt: "2026-11-08T08:00:00.000Z",
+      },
+    ],
+    expectedMessageIds: [],
+    excludedMessageIds: ["older-unrelated-question"],
+  },
+  {
     name: "resolves a follow-up about the shortlisted CRM tools",
     prompt: "Have any of them changed pricing or shipped something big since?",
     now: "2026-11-11T08:00:00.000Z",

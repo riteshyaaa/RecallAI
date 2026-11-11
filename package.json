@@ -10,7 +10,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "eval:memory": "vitest run tests/evaluation/memory.evaluation.test.ts",
+    "eval:memory": "vitest run tests/evaluation tests/unit/agent-plan.test.ts tests/unit/evidence.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },

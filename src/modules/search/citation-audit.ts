@@ -5,6 +5,9 @@ export type CitationAudit = {
   citationCount: number;
   invalidCitations: string[];
   uncitedParagraphs: string[];
+  substantiveParagraphCount: number;
+  citedParagraphCount: number;
+  citationCoverageRate: number;
   passed: boolean;
 };
 
@@ -39,24 +42,37 @@ export function auditCitations(
       return true;
     }
   });
-  const uncitedParagraphs = answer
+  const substantive = answer
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => {
-      if (!paragraph || /^#{1,6}\s/.test(paragraph)) return false;
-      if (paragraph.startsWith("```") || paragraph.startsWith(">"))
-        return false;
+    .flatMap((paragraph) => {
+      if (!paragraph || /^#{1,6}\s/.test(paragraph)) return [];
+      if (paragraph.startsWith("```") || paragraph.startsWith(">")) return [];
+      if (
+        /^(?:i (?:couldn't|cannot|can't) verify|no (?:reliable )?sources? (?:were|was) found|i found no usable sources)\b/i.test(
+          paragraph,
+        )
+      )
+        return [];
       const text = paragraph.replace(/[`*_>#-]/g, " ");
       const wordCount = text.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g)?.length ?? 0;
       const hasMarkdownCitation =
         /\[[^\]]+\]\(https?:\/\/[^\s)]+(?:\s+[^)]*)?\)/.test(paragraph);
-      return wordCount >= 8 && !hasMarkdownCitation;
+      return wordCount >= 8 ? [{ paragraph, hasMarkdownCitation }] : [];
     });
+  const uncitedParagraphs = substantive
+    .filter(({ hasMarkdownCitation }) => !hasMarkdownCitation)
+    .map(({ paragraph }) => paragraph);
+  const citedParagraphCount = substantive.length - uncitedParagraphs.length;
 
   return {
     citationCount: citations.length,
     invalidCitations,
     uncitedParagraphs,
+    substantiveParagraphCount: substantive.length,
+    citedParagraphCount,
+    citationCoverageRate:
+      substantive.length === 0 ? 1 : citedParagraphCount / substantive.length,
     passed: invalidCitations.length === 0 && uncitedParagraphs.length === 0,
   };
 }
